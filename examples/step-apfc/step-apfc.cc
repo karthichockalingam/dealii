@@ -45,16 +45,15 @@ namespace StepAPFC
     void   assemble_system(int index);
     void   solve(int index);
     void   output_results() const;
-    void   material_system();
+    void   material_system(const typename DoFHandler<dim>::active_cell_iterator cell,
+			   std::vector<double> & A2, std::vector<std::vector<double>> & values);
     const unsigned int degree;
     const unsigned int num_index;
     Triangulation<dim> triangulation;
-    std::vector<FESystem<dim>>  fe{};
+    FESystem<dim>  fe;
     DoFHandler<dim>    dof_handler;
     BlockSparsityPattern      sparsity_pattern;
     std::vector<BlockSparseMatrix<double>> system_matrix{}; // = std::vector<BlockSparseMatrix<double>>(3);
-    // const unsigned int n_refinement_steps;
-    //DiscreteTime time;
     std::vector<BlockVector<double>> solution{}; // = std::vector<BlockVector<double>>(3);
     std::vector<BlockVector<double>> old_solution{}; // = std::vector<BlockVector<double>>(3);
     std::vector<BlockVector<double>> system_rhs{}; // = std::vector<BlockVector<double>>(3);
@@ -68,6 +67,14 @@ namespace StepAPFC
   AmplitudePhaseFieldCrystalProblem<dim>::AmplitudePhaseFieldCrystalProblem(const unsigned int degree, const unsigned int num_index)
     : degree(degree)
     , num_index(num_index)
+    , fe(FE_Q<dim>(degree),
+         1,
+         FE_Q<dim>(degree),
+         1,
+         FE_Q<dim>(degree),
+         1,
+         FE_Q<dim>(degree),
+         1)
     , dof_handler(triangulation)  
     , system_matrix(num_index)
     , solution(num_index)
@@ -76,26 +83,116 @@ namespace StepAPFC
     , n_refinement_steps(6)
     , time(/*start time*/ 0., /*end time*/ 1000.)
   {
-    for(unsigned int i=0; i < num_index; i++)
-       fe.push_back({FE_Q<dim>(degree),1,FE_Q<dim>(degree),1,FE_Q<dim>(degree),1,FE_Q<dim>(degree),1});
   }
+
+
+
+  template <int dim>
+  class RotatedIC : public Function<dim>
+  {
+  public:
+      RotatedIC(unsigned int i)
+      : Function<dim>(dim + 2), index{i}
+    {}
+
+    unsigned int index;
+
+    virtual void vector_value(const Point<dim> & p,
+                              Vector<double> &  values) const override
+    {
+      Assert(values.size() == dim + 2,
+             ExcDimensionMismatch(values.size(), dim + 2));
+
+      const unsigned int ncomp = 3;
+      std::vector<Tensor<1, dim>> k_vector(ncomp);
+      std::vector<std::vector<double>> k_Rvector(ncomp , std::vector<double> (dim, 0.0));
+      std::vector<std::vector<double>> dk(ncomp , std::vector<double> (dim, 0.0));
+      
+      k_vector[0][0] = -0.866025;
+      k_vector[0][1] = -0.5;
+      
+      k_vector[1][0] = 0.0;
+      k_vector[1][1] = 1.0;
+      
+      k_vector[2][0] = 0.866025;
+      k_vector[2][1] = -0.5;
+      
+      const double db = 0.02;
+      // const double bx = 0.98;                                                                                                                                
+      const double v = 0.3333;
+      const double t = 0.5;
+      const double theta = 5;
+      const double thetaR = theta * M_PI/180.0;
+      const double epsilon = 3;
+      const double radius = 10;
+
+      for (unsigned int i = 0; i < ncomp; ++i)
+	{
+	  k_Rvector[i][0] = k_vector[i][0] * std::cos(thetaR) - k_vector[i][1] * std::sin(thetaR);
+	  k_Rvector[i][1] = k_vector[i][0] * std::sin(thetaR) + k_vector[i][1] * std::cos(thetaR);
+	  dk[i][0] = k_Rvector[i][0] - k_vector[i][0];
+	  dk[i][1] = k_Rvector[i][1] - k_vector[i][1];
+	}
+
+      std::vector<double> exp(ncomp, 0.0);
+   
+      for (unsigned int i = 0; i < ncomp; ++i)
+	for (unsigned int j = 0; j < dim; ++j)
+	  exp[i] += dk[i][j] * p(j);
+
+      double r = p.norm();
+
+        //sign distance function                                                                                                                                     
+      double d = r - radius;
+      
+      double param = (3.0 * d/epsilon);
+      double shi = 0.5 * (1.0 - std::tanh(param));
+      
+      double paramN = -(3.0 * d/epsilon);
+      double shiN = 0.5 * (1.0 - std::tanh(paramN));
+      
+      double num = t * t - 15.0 * v * db;
+      double phi = (t + std::pow(num, 0.5))/(15.0 * v);
+
+      // initial condition for alpha_re       
+      values(0) = shiN * phi + shi * phi * std::cos(exp[index]);
+
+      // initial condition for alpha_im
+      values(1) = shi * phi * std::sin(exp[index]);
+      
+      values(2) = 0.0; // initial condition for xi_re                                                                                                         
+      values(3) = 0.0; // initial condition for xi_im                                                                                                          
+    }
+  };
+
+
+  
 
    
   template <int dim>
   class InitialValues : public Function<dim>
   {
   public:
-    InitialValues()
+      InitialValues()
       : Function<dim>(dim + 2)
     {}
-
-        
+    
+    unsigned int index;
+           
     virtual void vector_value(const Point<dim> & /*p*/,
                               Vector<double> &  values) const override
     {
       Assert(values.size() == dim + 2,
              ExcDimensionMismatch(values.size(), dim + 2));
-      values(0) = 1.0; // inital condition for alpha_re
+
+      const double db = 0.02;
+      //const double bx = 0.98;
+      const double v = 0.3333;
+      const double t = 0.5;
+
+      double num = t * t - 15.0 * v * db;
+    
+      values(0) = (t + std::pow(num, 0.5))/(15.0 * v); // inital condition for alpha_re
 
       values(1) = 0.0; // initial condition for alpha_im
         
@@ -108,11 +205,9 @@ namespace StepAPFC
   template <int dim>
   void AmplitudePhaseFieldCrystalProblem<dim>::make_grid_and_dofs()
   {
-    GridGenerator::hyper_cube(triangulation, 0, 50);
+    GridGenerator::hyper_cube(triangulation, -25, 25);
     triangulation.refine_global(n_refinement_steps);
-    dof_handler.distribute_dofs(fe[0]); //?????????????????????????
-    dof_handler.distribute_dofs(fe[1]);
-    dof_handler.distribute_dofs(fe[2]);
+    dof_handler.distribute_dofs(fe);   
     
     DoFRenumbering::component_wise(dof_handler);
       
@@ -186,51 +281,70 @@ namespace StepAPFC
 
 
   template <int dim>
-  void AmplitudePhaseFieldCrystalProblem<dim>::material_system()
+  void AmplitudePhaseFieldCrystalProblem<dim>::material_system
+  (const typename DoFHandler<dim>::active_cell_iterator cell, std::vector<double> & A2
+   ,std::vector<std::vector<double>> & values)
   {
    QGauss<dim>     quadrature_formula(degree + 1);
-   
-   std::vector<FEValues<dim>> fe_vector_values(num_index);
-   
    const unsigned int n_q_points    = quadrature_formula.size();
    
    const FEValuesExtractors::Scalar alpha_re(0);
    const FEValuesExtractors::Scalar alpha_im(1);
 
-   std::vector<double>  solution_alpha_re_values(n_q_points);
-   std::vector<double>  solution_alpha_im_values(n_q_points);
+   std::vector<double>  old_solution_alpha_re_values(n_q_points);
+   std::vector<double>  old_solution_alpha_im_values(n_q_points);
 
+   FEValues<dim>     fe_values(fe,
+			       quadrature_formula,
+			       update_values | update_gradients |
+			       update_quadrature_points | update_JxW_values);
+
+   //std::vector<std::vector<double>> values(2*num_index , std::vector<double> (n_q_points, 0.0));
    
-    FEValues<dim>     fe_values(fe[0],
-                                quadrature_formula,
-                                update_values | update_gradients |
-                                update_quadrature_points | update_JxW_values);
-
-    std::vector<double>  A2(n_q_points,0.0);
-    
-     
-   for(unsigned int i=0; i < num_index; i++)
-	fe_values.push_back({fe[i],
-	      quadrature_formula,
-	      update_values});
-   /*   
    for(unsigned int index = 0; index < num_index; index++)
      {
-       fe_values[index].reinit(cell);
-       fe_values[index][alpha_re].get_function_values(solution[index], solution_alpha_re_values);
-       fe_values[index][alpha_im].get_function_values(solution[index], solution_alpha_im_values);
-       
+       fe_values.reinit(cell);
+       fe_values[alpha_re].get_function_values(old_solution[index], old_solution_alpha_re_values);
+       fe_values[alpha_im].get_function_values(old_solution[index], old_solution_alpha_im_values);
+
+       values[2*index]    = old_solution_alpha_re_values;
+       values[2*index+1]  = old_solution_alpha_im_values;
+            
        for (unsigned int q = 0; q < n_q_points; ++q)
 	 {
-	   const double alpha_re = solution_alpha_re_values[q];
-	   const double alpha_im = solution_alpha_im_values[q];
+	   const double alpha_re = old_solution_alpha_re_values[q];
+	   const double alpha_im = old_solution_alpha_im_values[q];
 
 	   A2[q] += alpha_re * alpha_re + alpha_im * alpha_im;
 	 }
-	 }*/
-   
-   
+     }
   }
+
+
+  unsigned int ID(unsigned int i)
+  {
+    return (i > 5) ? i-6:i;
+  }
+  
+  double Ref(double a, double b, double c, double d)
+  {
+    return a*c-b*d;  //Re((a-ib)(c-id))  
+  }
+  
+  double Imf(double a,double b,double c,double d)
+  {
+    return -(a*d+b*c); //Im((a-ib)(c-id))
+  }
+
+  void dfdn(const std::vector<double> & vals, double & val_re, double & val_im, unsigned int i)
+  {
+    double t = 0.5;
+    
+    val_re = -2.0 * t * Ref(vals[ID(2*i+2)],vals[ID(2*i+3)],vals[ID(2*i+4)],vals[ID(2*i+5)]);
+    
+    val_im = -2.0 * t * Imf(vals[ID(2*i+2)],vals[ID(2*i+3)],vals[ID(2*i+4)],vals[ID(2*i+5)]);
+  }
+  
   
   template <int dim>
   void AmplitudePhaseFieldCrystalProblem<dim>::assemble_system(int index)
@@ -239,80 +353,86 @@ namespace StepAPFC
     system_rhs[index]    = 0;
     QGauss<dim>     quadrature_formula(degree + 1);
 
-    
-    FEValues<dim>     fe_values(fe[index],
+    FEValues<dim>     fe_values(fe,
 				quadrature_formula,
 				update_values | update_gradients |
 				update_quadrature_points | update_JxW_values);
     
-    const unsigned int dofs_per_cell = fe[index].dofs_per_cell;
+    const unsigned int dofs_per_cell = fe.dofs_per_cell;
     const unsigned int n_q_points    = quadrature_formula.size();
     
     FullMatrix<double> local_matrix(dofs_per_cell, dofs_per_cell);
     Vector<double>     local_rhs(dofs_per_cell);
     std::vector<types::global_dof_index> local_dof_indices(dofs_per_cell);
     
-    
+    /*
     std::vector<double>  old_solution_alpha_re_values(n_q_points);
     std::vector<double>  old_solution_alpha_im_values(n_q_points);
     std::vector<double>  solution_alpha_re_values(n_q_points);
-    std::vector<double>  solution_alpha_im_values(n_q_points);
-
-    
-    std::vector<FEValues<dim>> fe_vector_values(num_index);
-    /*
-    for(unsigned int i=0; i < num_index; i++)
-      fe_vector_values.push_back({fe[i],
-	    quadrature_formula,
-	    update_values});
-    */
+    std::vector<double>  solution_alpha_im_values(n_q_points);*/
     
     const FEValuesExtractors::Scalar alpha_re(0);
     const FEValuesExtractors::Scalar alpha_im(1);
     const FEValuesExtractors::Scalar xi_re(2);
     const FEValuesExtractors::Scalar xi_im(3);
     
-    const double db = 1.0;
-    const double bx = 1.0;
+    const double db = 0.02;
+    const double bx = 0.98;
     const double v = 0.3333;
     // const double t = 0.5;
     
     std::vector<Tensor<1, dim>> q_vector(num_index);
+
+    q_vector[0][0] = -0.866025;
+    q_vector[0][1] = -0.5;
     
-    q_vector[0][0] = 1.0;
-    q_vector[0][1] = 1.0;
-    
-    q_vector[1][0] = 1.0;
+    q_vector[1][0] = 0.0;
     q_vector[1][1] = 1.0;
     
-    q_vector[2][0] = 1.0;
-    q_vector[2][1] = 1.0;
+    q_vector[2][0] = 0.866025;
+    q_vector[2][1] = -0.5;
     
     const double K = bx;
-    
+
+    std::vector<std::vector<double>> values(2*num_index , std::vector<double> (n_q_points, 0.0));
+
     std::vector<double>  A2(n_q_points,0.0);
-       
+    
+    std::vector<double> qp_values(2*num_index,0.0);
+
+    double Ref, Imf;
+    
     for (const auto &cell : dof_handler.active_cell_iterators())
       {
         fe_values.reinit(cell);
         local_matrix = 0;
         local_rhs    = 0;
         
-        fe_values[alpha_re].get_function_values(old_solution[index], old_solution_alpha_re_values);
-        fe_values[alpha_im].get_function_values(old_solution[index], old_solution_alpha_im_values);
+	// fe_values[alpha_re].get_function_values(old_solution[index], old_solution_alpha_re_values);
+        // fe_values[alpha_im].get_function_values(old_solution[index], old_solution_alpha_im_values);
 
-	//	material_system(cell, A2);
+        std::fill(A2.begin(), A2.end(), 0.0);
 	
+	material_system(cell, A2, values);
+
         for (unsigned int q = 0; q < n_q_points; ++q)
 	  {
-            const double old_alpha_re = old_solution_alpha_re_values[q];
-            const double old_alpha_im = old_solution_alpha_im_values[q];
-            
-            const double G1 = (1.0/time.get_next_step_size())+db+3.0*v*(2.0*A2[q]+old_alpha_re*old_alpha_re-old_alpha_im*old_alpha_im);
+            const double old_alpha_re = values[2*index][q]; //old_solution_alpha_re_values[q];
+            const double old_alpha_im = values[2*index+1][q]; //old_solution_alpha_im_values[q];
+
+	    for(unsigned int count = 0; count < num_index; count++)
+	      {
+		qp_values[2*count] = values[2*count][q];
+		qp_values[2*count+1] = values[2*count+1][q];
+	      }
+
+	    dfdn(qp_values, Ref, Imf, index);
+	    
+	    const double G1 = (1.0/time.get_next_step_size())+db+3.0*v*(2.0*A2[q]+old_alpha_re*old_alpha_re-old_alpha_im*old_alpha_im);
             const double G2 = (1.0/time.get_next_step_size())+db+3.0*v*(2.0*A2[q]+old_alpha_im*old_alpha_im-old_alpha_re*old_alpha_re);
             
-            const double H1 = ((1.0/time.get_next_step_size())+6.0*v*old_alpha_re*old_alpha_re)*old_alpha_re;
-            const double H2 = ((1.0/time.get_next_step_size())+6.0*v*old_alpha_im*old_alpha_im)*old_alpha_im;
+            const double H1 = ((1.0/time.get_next_step_size())+6.0*v*old_alpha_re*old_alpha_re)*old_alpha_re-Ref;
+            const double H2 = ((1.0/time.get_next_step_size())+6.0*v*old_alpha_im*old_alpha_im)*old_alpha_im-Imf;
             
 	    for (unsigned int i = 0; i < dofs_per_cell; ++i)
 	      {
@@ -416,13 +536,20 @@ namespace StepAPFC
 
       for(unsigned int i=0; i < num_index; i++)
       {
+	
+	VectorTools::project(dof_handler,
+			     constraints,
+			     QGauss<dim>(degree + 1),
+			     RotatedIC<dim>(i),
+			     old_solution[i]);
+	/*
           VectorTools::project(dof_handler,
-                           constraints,
-                           QGauss<dim>(degree + 1),
-                           InitialValues<dim>(),
-                           old_solution[i]);
+	  constraints,
+	  QGauss<dim>(degree + 1),
+	  InitialValues<dim>(),
+	  old_solution[i]);*/
       }
-        
+      
     }
     do
       {
