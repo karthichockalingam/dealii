@@ -500,13 +500,13 @@ namespace StepAPFC
   
   template <int dim>
   void AmplitudePhaseFieldCrystalProblem<dim>::refine_mesh(const unsigned int min_grid_level,
-                                      const unsigned int max_grid_level)
+							   const unsigned int max_grid_level)
   {
     std::vector<Vector<float>> estimated_error_per_cell(num_index,Vector<float>(triangulation.n_active_cells()));
     Vector<float> sum_estimated_error_per_cell(triangulation.n_active_cells());
-	
+    
     FEValuesExtractors::Scalar alpha_im(1);
-
+    
     for(unsigned int i=0; i < num_index; i++)
       KellyErrorEstimator<dim>::estimate(
 					 dof_handler,
@@ -515,14 +515,14 @@ namespace StepAPFC
 					 solution[i],
 					 estimated_error_per_cell[i],
 					 fe.component_mask(alpha_im));
-
-    for(unsigned int i=0; i < num_index; i++)
-      sum_estimated_error_per_cell += estimated_error_per_cell[i];
     
-    GridRefinement::refine_and_coarsen_fixed_number(triangulation,
-                                                      sum_estimated_error_per_cell,
-                                                      0.60,
-                                                      0.40);
+    //for(unsigned int i=0; i < num_index; i++)
+    //sum_estimated_error_per_cell += estimated_error_per_cell[i];
+    
+    GridRefinement::refine_and_coarsen_fixed_fraction(triangulation,
+                                                      estimated_error_per_cell[0],
+                                                      0.80,
+                                                      0.20);
     if (triangulation.n_levels() > max_grid_level)
       for (const auto &cell :
 	     triangulation.active_cell_iterators_on_level(max_grid_level))
@@ -531,9 +531,9 @@ namespace StepAPFC
     for (const auto &cell :
 	   triangulation.active_cell_iterators_on_level(min_grid_level))
       cell->clear_coarsen_flag();
-
     
-    std::vector<SolutionTransfer<dim>> solution_trans(3,dof_handler);
+    SolutionTransfer<dim> solution_trans(dof_handler);
+    
     std::vector<Vector<double>> previous_solution(num_index);
     
     for(unsigned int i=0; i < num_index; i++)
@@ -541,18 +541,16 @@ namespace StepAPFC
     
     triangulation.prepare_coarsening_and_refinement();
     
-    for(unsigned int i=0; i < num_index; i++)
-      solution_trans[i].prepare_for_coarsening_and_refinement(previous_solution[i]);
+    solution_trans.prepare_for_coarsening_and_refinement(previous_solution);
     
     triangulation.execute_coarsening_and_refinement();
     
     setup_system();
     
+    solution_trans.interpolate(previous_solution, solution);
+    
     for(unsigned int i=0; i < num_index; i++)
-      {
-        solution_trans[i].interpolate(previous_solution[i], solution[i]);
-        constraints.distribute(solution[i]);
-      }
+      constraints.distribute(solution[i]);
     
   }
 
